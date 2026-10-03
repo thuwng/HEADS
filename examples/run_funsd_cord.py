@@ -9,7 +9,7 @@ from typing import Optional
 
 import numpy as np
 from datasets import ClassLabel, load_dataset, load_metric
-
+from layoutlmft.data.order_utils import retag_bio_after_reorder, entity_set_prf
 import transformers
 import torch
 
@@ -81,6 +81,10 @@ class ModelArguments:
     lambda_boundary: float = field(default=0.5)
     seg_window: Optional[int] = field(default=None)
     new_param_lr: float = field(default=5e-4)
+
+    lds_use_ctx: bool = field(default=True)
+    lds_use_gate: bool = field(default=True)
+    lds_use_start_cue: bool = field(default=True)
 
 @dataclass
 class DataTrainingArguments:
@@ -693,6 +697,7 @@ def main():
         }
 
     num_labels = len(label_list)
+    name_to_raw = {label_list[label_to_id[k]]: k for k in label_to_id}
 
     # --------------------------------------------------------------------------
     # Model config
@@ -745,6 +750,9 @@ def main():
         )
         config.lambda_boundary = model_args.lambda_boundary   # gán thẳng, không truyền qua from_pretrained
         config.seg_window = model_args.seg_window
+        config.lds_use_ctx = model_args.lds_use_ctx
+        config.lds_use_gate = model_args.lds_use_gate
+        config.lds_use_start_cue = model_args.lds_use_start_cue
         model = LayoutLMv3ForLatentSegmentKIE.from_pretrained(
             model_args.model_name_or_path,
             from_tf=bool(".ckpt" in model_args.model_name_or_path),
@@ -840,7 +848,7 @@ def main():
     # --------------------------------------------------------------------------
     # Tokenization + geometry-only reading order + auto segmentation
     # --------------------------------------------------------------------------
-    def tokenize_and_align_labels(examples, augmentation=False):
+    def tokenize_and_align_labels(examples, indices, augmentation=False):
         # Build the geometry-only reading order BEFORE tokenization.
         reordered_words = []
         reordered_bboxes = []
@@ -873,9 +881,9 @@ def main():
             reordered_bboxes.append(
                 [bboxes_i[j] for j in order]
             )
-            reordered_labels.append(
-                [labels_i[j] for j in order]
-            )
+            labels_str = [label_list[label_to_id[l]] for l in labels_i]
+            new_str = retag_bio_after_reorder(labels_str, order)   # chỉ đụng TARGET
+            reordered_labels.append([name_to_raw[s] for s in new_str])
 
         tokenized_inputs = tokenizer(
             reordered_words,
@@ -894,6 +902,7 @@ def main():
         block_ids_all = []
         column_ids_all = []
         word_start_all, boundary_all, orig_wid_all = [], [], []
+        doc_idx_all = []
 
         for batch_index in range(
             len(tokenized_inputs["input_ids"])
@@ -941,16 +950,12 @@ def main():
             block_ids_orig = compute_block_ids(bbox)
             column_ids_orig = compute_column_ids(bbox)
 
-            if data_args.use_latent_segment:
-                word_label_strs = [label_list[label_to_id[l]] for l in label]
-                ws_c, bl_c, ow_c = align_word_level_columns(
-                    word_ids,
-                    boundary_targets_from_word_labels(word_label_strs),
-                    order=reordered_orders[original_batch_index],
-                )
-                word_start_all.append(ws_c)
-                boundary_all.append(bl_c)
-                orig_wid_all.append(ow_c)
+            word_label_strs = [label_list[label_to_id[l]] for l in label]
+            ws_c, bl_c, ow_c = align_word_level_columns(
+                word_ids, boundary_targets_from_word_labels(word_label_strs),
+                order=reordered_orders[original_batch_index])
+            word_start_all.append(ws_c); boundary_all.append(bl_c); orig_wid_all.append(ow_c)
+            doc_idx_all.append(int(indices[original_batch_index]))
 
             previous_word_idx = None
 
@@ -1064,10 +1069,10 @@ def main():
         tokenized_inputs["line_ids"] = line_ids_all
         tokenized_inputs["block_ids"] = block_ids_all
         tokenized_inputs["column_ids"] = column_ids_all
-        if data_args.use_latent_segment:
-            tokenized_inputs["word_start"] = word_start_all
-            tokenized_inputs["boundary_labels"] = boundary_all
-            tokenized_inputs["orig_word_id"] = orig_wid_all
+        tokenized_inputs["word_start"] = word_start_all
+        tokenized_inputs["boundary_labels"] = boundary_all
+        tokenized_inputs["orig_word_id"] = orig_wid_all
+        tokenized_inputs["doc_idx"] = doc_idx_all
 
         if getattr(
             data_args,
@@ -1090,6 +1095,7 @@ def main():
         train_dataset = train_dataset.map(
             tokenize_and_align_labels,
             batched=True,
+            with_indices=True,
             remove_columns=remove_columns,
             num_proc=data_args.preprocessing_num_workers,
             load_from_cache_file=not data_args.overwrite_cache,
@@ -1106,6 +1112,7 @@ def main():
         eval_dataset = eval_dataset.map(
             tokenize_and_align_labels,
             batched=True,
+            with_indices=True,
             remove_columns=remove_columns,
             num_proc=data_args.preprocessing_num_workers,
             load_from_cache_file=not data_args.overwrite_cache,
@@ -1120,6 +1127,7 @@ def main():
         test_dataset = test_dataset.map(
             tokenize_and_align_labels,
             batched=True,
+            with_indices=True,
             remove_columns=remove_columns,
             num_proc=data_args.preprocessing_num_workers,
             load_from_cache_file=not data_args.overwrite_cache,
@@ -1239,6 +1247,15 @@ def main():
 
         predictions, labels, metrics = trainer.predict(test_dataset)
         predictions = np.argmax(predictions, axis=2)
+
+        raw_test = datasets["test"]
+        if data_args.max_test_samples is not None:
+            raw_test = raw_test.select(range(data_args.max_test_samples))
+        gold = [[label_list[label_to_id[l]] for l in seq] for seq in raw_test[label_column_name]]
+        ent = entity_set_prf(predictions, label_list, test_dataset["orig_word_id"],
+                             test_dataset["doc_idx"], gold)
+        trainer.log_metrics("test_entity", ent)
+        trainer.save_metrics("test_entity", ent)
 
         # Remove ignored index (special tokens)
         true_predictions = [

@@ -307,6 +307,10 @@ class LayoutLMv3ForLatentSegmentKIE(LayoutLMv3PreTrainedModel):
         self.gate = TokenSegmentGate(H)
         self.start_embedding = nn.Embedding(2, H)
         self.lambda_boundary = float(getattr(config, "lambda_boundary", 0.5))
+        # Ablation switches (mặc định = mô hình đầy đủ)
+        self.use_ctx = bool(getattr(config, "lds_use_ctx", True))          # C2
+        self.use_gate = bool(getattr(config, "lds_use_gate", True))        # C3
+        self.use_start = bool(getattr(config, "lds_use_start_cue", True))  # C4
 
         self.init_weights()
         self.reset_new_parameters()
@@ -358,11 +362,16 @@ class LayoutLMv3ForLatentSegmentKIE(LayoutLMv3PreTrainedModel):
         ws = valid.clone() if ws is None else ws.bool()
 
         z, A, b_logit, log_head, head_prob = self.seg_pool(text_h, bbox[:, :T], valid, ws)
-        ctx = self.seg_ctx(z, A, bbox[:, :T], valid, log_head)
-        fused, g = self.gate(text_h, ctx)
-        start_emb = head_prob.unsqueeze(-1).to(fused.dtype) * self.start_embedding.weight[1] \
-            + (1.0 - head_prob).unsqueeze(-1).to(fused.dtype) * self.start_embedding.weight[0]
-        logits_text = self.classifier(self.dropout(fused + start_emb))
+        ctx = self.seg_ctx(z, A, bbox[:, :T], valid, log_head) if self.use_ctx else z
+        if self.use_gate:
+            fused, g = self.gate(text_h, ctx)
+        else:
+            fused = ctx
+        if self.use_start:
+            hp = head_prob.unsqueeze(-1).to(fused.dtype)
+            fused = fused + hp * self.start_embedding.weight[1] \
+                + (1.0 - hp) * self.start_embedding.weight[0]
+        logits_text = self.classifier(self.dropout(fused))
 
         if image_h.shape[1] > 0:
             logits = torch.cat([logits_text, self.classifier(self.dropout(image_h))], dim=1)
@@ -383,7 +392,10 @@ class LayoutLMv3ForLatentSegmentKIE(LayoutLMv3PreTrainedModel):
             if bl is not None and self.lambda_boundary > 0:
                 prev_valid = torch.roll(valid, shifts=1, dims=1)
                 prev_valid[:, 0] = False
-                m = (bl != -100) & valid & ws & prev_valid
+                m = (bl != -100) & valid & ws & prev_valid   # đúng tập can_split
+                if m.any():
+                    lb = F.binary_cross_entropy_with_logits(b_logit[m], bl[m].float())
+                    loss = loss + self.lambda_boundary * lb
 
         if not return_dict:
             out = (logits,) + outputs[2:]
