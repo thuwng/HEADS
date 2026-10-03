@@ -11,8 +11,9 @@ SEEDS=(42 123 1993)
 BASE_OUT_DIR="./logs/funsd-base-segment-final"
 
 # Setting 1 (oracle): tái hiện model cũ. Setting 2 xem ghi chú bên dưới.
-SETTING_FLAGS="--bbox_level segment --seg_source oracle_bbox --apply_xy_cut False"
-
+# SETTING_FLAGS="--bbox_level segment --seg_source oracle_bbox --apply_xy_cut False"
+# Setting 2
+SETTING_FLAGS="--bbox_level word --apply_xy_cut True --seg_source line"
 for SEED in "${SEEDS[@]}"
 do
     OUT_DIR="${BASE_OUT_DIR}-seed${SEED}"
@@ -26,7 +27,7 @@ do
     python examples/run_funsd_cord.py \
       --dataset_name funsd \
       --do_train --do_eval --do_predict \
-      --use_segment_head \
+      --use_latent_segment --lambda_boundary 0.5
       $SETTING_FLAGS \
       --model_name_or_path models/layoutlmv3-base \
       --output_dir "$OUT_DIR" \

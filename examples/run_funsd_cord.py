@@ -103,6 +103,7 @@ class DataTrainingArguments:
     label_all_tokens: bool = field(default=False)
     return_entity_level_metrics: bool = field(default=False)
 
+    segment_level_layout: bool = field(default=True)
     bbox_level: str = field(default="word", metadata={"help": "word | segment (oracle)"})
     seg_source: str = field(default="line", metadata={"help": "line | oracle_bbox"})
     use_latent_segment: bool = field(default=False)
