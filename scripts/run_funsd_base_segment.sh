@@ -13,7 +13,7 @@ BASE_OUT_DIR="./logs/funsd-base-segment-final"
 # Setting 1 (oracle): tái hiện model cũ. Setting 2 xem ghi chú bên dưới.
 # SETTING_FLAGS="--bbox_level segment --seg_source oracle_bbox --apply_xy_cut False"
 # Setting 2
-SETTING_FLAGS="--bbox_level word --apply_xy_cut True --seg_source line"
+SETTING_FLAGS="--bbox_level word --apply_xy_cut True"
 for SEED in "${SEEDS[@]}"
 do
     OUT_DIR="${BASE_OUT_DIR}-seed${SEED}"
@@ -28,10 +28,12 @@ do
       --dataset_name funsd \
       --do_train --do_eval --do_predict \
       --use_latent_segment --lambda_boundary 0.5 \
+      --lds_use_ctx True --lds_use_gate True --lds_use_start_cue True \
+      --use_segment_head False \
       $SETTING_FLAGS \
       --model_name_or_path models/layoutlmv3-base \
       --output_dir "$OUT_DIR" \
-      --segment_level_layout 1 --visual_embed 1 --input_size 224 \
+      --visual_embed 1 --input_size 224 \
       --max_steps 1000 --save_steps 1000 --evaluation_strategy steps --eval_steps 100 \
       --learning_rate 1e-5 \
       --warmup_ratio 0.1 \
@@ -41,11 +43,8 @@ do
       --report_to none \
       --seed "$SEED" \
       --overwrite_output_dir --overwrite_cache \
-      --use_hierarchical_position_encoding \
-      --max_line_position 100 \
-      --max_block_position 30 \
-      --use_column_encoding True \
-      --max_column_position 8
+      --use_hierarchical_position_encoding False \
+      --use_column_encoding False
 done
 
 echo ""
@@ -57,12 +56,12 @@ export BASE_OUT_DIR
 python - <<'PY'
 import os, json, numpy as np
 seeds = [42, 123, 1993]
-metrics = ["eval_accuracy", "eval_f1", "eval_precision", "eval_recall", "eval_loss"]
+metrics = ["test_accuracy", "test_f1", "test_precision", "test_recall", "test_loss"]
 results = {m: [] for m in metrics}
 base_dir = os.environ['BASE_OUT_DIR']
 
 for seed in seeds:
-    path = f"{base_dir}-seed{seed}/eval_results.json"
+    path = f"{base_dir}-seed{seed}/test_results.json"
     print(f"\nSeed {seed}:")
     if not os.path.exists(path):
         print("  [WARNING] Missing:", path)

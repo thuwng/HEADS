@@ -153,6 +153,7 @@ class Cord(datasets.GeneratorBasedBuilder):
         for guid, file in enumerate(sorted(os.listdir(ann_dir))):
             words = []
             bboxes = []
+            bboxes_seg = []
             ner_tags = []
             file_path = os.path.join(ann_dir, file)
             with open(file_path, "r", encoding="utf8") as f:
