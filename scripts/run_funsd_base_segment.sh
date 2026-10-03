@@ -58,31 +58,50 @@ import os, json, numpy as np
 seeds = [42, 123, 1993]
 metrics = ["test_accuracy", "test_f1", "test_precision", "test_recall", "test_loss"]
 results = {m: [] for m in metrics}
+results["test_entity_f1"] = []
 base_dir = os.environ['BASE_OUT_DIR']
 
 for seed in seeds:
-    path = f"{base_dir}-seed{seed}/test_results.json"
     print(f"\nSeed {seed}:")
+    
+    # 1. Đọc Seqeval F1 truyền thống
+    path = f"{base_dir}-seed{seed}/test_results.json"
     if not os.path.exists(path):
         print("  [WARNING] Missing:", path)
-        continue
-    with open(path, "r") as f:
-        data = json.load(f)
-    for metric in metrics:
-        if metric in data:
-            results[metric].append(float(data[metric]))
-            print(f"  {metric:18s} = {data[metric]:.6f}")
+    else:
+        with open(path, "r") as f:
+            data = json.load(f)
+        for metric in metrics:
+            if metric in data:
+                val = float(data[metric])
+                if metric != "test_loss" and val <= 1.0: val *= 100.0
+                results[metric].append(val)
+                print(f"  {metric:18s} = {val:.4f}")
+                
+    # 2. Đọc Entity-Set F1 (SỐ DÙNG CHO PAPER)
+    path_ent = f"{base_dir}-seed{seed}/test_entity_results.json"
+    if os.path.exists(path_ent):
+        with open(path_ent, "r") as f:
+            data_ent = json.load(f)
+        # Bắt đúng tên key do trainer sinh ra
+        ent_key = "test_entity_entity_f1" if "test_entity_entity_f1" in data_ent else "entity_f1"
+        if ent_key in data_ent:
+            val = float(data_ent[ent_key])
+            if val <= 1.0: val *= 100.0
+            results["test_entity_f1"].append(val)
+            print(f"  test_entity_f1     = {val:.4f}  <-- DÙNG SỐ NÀY CHO PAPER")
 
 print("\n" + "=" * 70)
 print("FINAL RESULT: MEAN ± STD")
 print("=" * 70)
 summary = {}
-for metric in metrics:
+for metric in metrics + ["test_entity_f1"]:
     values = results[metric]
     if not values:
         continue
     mean, std = np.mean(values), np.std(values, ddof=1) if len(values) > 1 else 0.0
-    print(f"{metric:18s}: {mean:.4f} ± {std:.4f}")
+    marker = " (MAIN METRIC)" if metric == "test_entity_f1" else ""
+    print(f"{metric:18s}: {mean:.4f} ± {std:.4f}{marker}")
     summary[metric] = {"values": values, "mean": float(mean), "std": float(std)}
 
 out_file = f"{base_dir}_3seed_summary.json"

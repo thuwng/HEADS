@@ -1263,6 +1263,36 @@ def main():
             for prediction, label in zip(predictions, labels)
         ]
 
+        # 1. Trích xuất nhãn thực tế (Gold) và chuỗi Tokens gốc
+        true_labels = [
+            [label_list[l] for (p, l) in zip(prediction, label) if l != -100]
+            for prediction, label in zip(predictions, labels)
+        ]
+        
+        true_tokens = [
+            [tokenizer.convert_ids_to_tokens(t) for (t, l) in zip(input_ids, label) if l != -100]
+            for input_ids, label in zip(test_dataset["input_ids"], labels)
+        ]
+
+        # 2. Phân tích và ghi danh sách token bị lỗi ra file
+        output_error_file = os.path.join(training_args.output_dir, "test_errors_analysis.txt")
+        if trainer.is_world_process_zero():
+            error_count = 0
+            with open(output_error_file, "w", encoding="utf-8") as writer:
+                writer.write(f"{'Doc_Idx':<10} | {'Token':<25} | {'Gold (True)':<15} | {'Predicted':<15}\n")
+                writer.write("-" * 75 + "\n")
+                
+                for doc_idx, (t_tokens, t_preds, t_labels) in enumerate(zip(true_tokens, true_predictions, true_labels)):
+                    for token, pred, true_lb in zip(t_tokens, t_preds, t_labels):
+                        if pred != true_lb:  # Chỉ lọc các token dự đoán sai
+                            writer.write(f"{doc_idx:<10} | {token:<25} | {true_lb:<15} | {pred:<15}\n")
+                            error_count += 1
+                            
+                writer.write("-" * 75 + "\n")
+                writer.write(f"Total token-level errors: {error_count}\n")
+            
+            logger.info(f"*** Đã lưu danh sách token dự đoán lỗi tại: {output_error_file} ***")
+
         trainer.log_metrics("test", metrics)
         trainer.save_metrics("test", metrics)
 
