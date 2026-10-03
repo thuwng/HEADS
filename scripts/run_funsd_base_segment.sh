@@ -27,7 +27,7 @@ do
     python examples/run_funsd_cord.py \
       --dataset_name funsd \
       --do_train --do_eval --do_predict \
-      --use_latent_segment --lambda_boundary 0.5
+      --use_latent_segment --lambda_boundary 0.5 \
       $SETTING_FLAGS \
       --model_name_or_path models/layoutlmv3-base \
       --output_dir "$OUT_DIR" \
