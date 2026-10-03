@@ -213,9 +213,6 @@ class LayoutLMv3Embeddings(nn.Module):
 
         embeddings = embeddings + spatial_position_embeddings
 
-        embeddings = self.LayerNorm(embeddings)
-        embeddings = self.dropout(embeddings)
-
         if self.line_position_embeddings is not None and line_ids is not None and block_ids is not None:
             # Đảm bảo line_ids và block_ids có cùng shape với embeddings
             if line_ids.dim() == 2 and line_ids.shape[1] != embeddings.shape[1]:

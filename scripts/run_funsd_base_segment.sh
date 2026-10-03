@@ -9,7 +9,10 @@ export WANDB_DISABLED=true
 
 SEEDS=(42 123 1993)
 BASE_OUT_DIR="./logs/funsd-base-segment-final"
-BROADCAST_MODE=${BROADCAST_MODE:-"additive"}
+
+# Setting 1 (oracle): tái hiện model cũ. Setting 2 xem ghi chú bên dưới.
+SETTING_FLAGS="--bbox_level segment --seg_source oracle_bbox --apply_xy_cut False"
+
 for SEED in "${SEEDS[@]}"
 do
     OUT_DIR="${BASE_OUT_DIR}-seed${SEED}"
@@ -22,8 +25,9 @@ do
 
     python examples/run_funsd_cord.py \
       --dataset_name funsd \
-      --do_train --do_eval \
+      --do_train --do_eval --do_predict \
       --use_segment_head \
+      $SETTING_FLAGS \
       --model_name_or_path models/layoutlmv3-base \
       --output_dir "$OUT_DIR" \
       --segment_level_layout 1 --visual_embed 1 --input_size 224 \

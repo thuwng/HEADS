@@ -381,10 +381,9 @@ class LayoutLMv3ForLatentSegmentKIE(LayoutLMv3PreTrainedModel):
 
             bl = _fit_len(boundary_labels, T, -100)
             if bl is not None and self.lambda_boundary > 0:
-                m = (bl != -100) & valid & ws
-                if m.any():
-                    lb = F.binary_cross_entropy_with_logits(b_logit[m], bl[m].float())
-                    loss = loss + self.lambda_boundary * lb
+                prev_valid = torch.roll(valid, shifts=1, dims=1)
+                prev_valid[:, 0] = False
+                m = (bl != -100) & valid & ws & prev_valid
 
         if not return_dict:
             out = (logits,) + outputs[2:]

@@ -127,6 +127,15 @@ class DataCollatorForKeyValueExtraction(DataCollatorMixin):
                 batch['segment_ids'][i] = batch['segment_ids'][i] + [batch['segment_ids'][i][-1] + 1] * (sequence_length - len(batch['segment_ids'][i])) + [
                     batch['segment_ids'][i][-1] + 2] * IMAGE_LEN
 
+        for key, pad_val in (("word_start", 0), ("boundary_labels", -100), ("orig_word_id", -1)):
+            if key in features[0]:
+                rows = batch[key]
+                if padding_side == "right":
+                    rows = [r + [pad_val] * (sequence_length - len(r)) for r in rows]
+                else:
+                    rows = [[pad_val] * (sequence_length - len(r)) + r for r in rows]
+                batch[key] = torch.tensor(rows, dtype=torch.long)  
+
         # ====== CHUYỂN TẤT CẢ LIST THÀNH TENSOR ======
         for k, v in batch.items():
             if isinstance(v, list) and len(v) > 0:
