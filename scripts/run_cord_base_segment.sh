@@ -1,13 +1,13 @@
 #!/bin/bash
 set -e
 
-cd /home/s24gbn1/Documents/httn/unilm/layoutlmv3
-export PYTHONPATH="/home/s24gbn1/Documents/httn/unilm/layoutlmv3:$PYTHONPATH"
+cd /home/tahuuloc/Documents/tthu/HEADS
+export PYTHONPATH="/home/tahuuloc/Documents/tthu/HEADS:$PYTHONPATH"
 export TOKENIZERS_PARALLELISM=false
 export WANDB_DISABLED=true 
 
 SEEDS=(42 123 1993)
-BASE_OUT_DIR="./logs/cord-base-segment-token-0.03"
+BASE_OUT_DIR="./logs/cord-base-segment-final"
 BROADCAST_MODE=${BROADCAST_MODE:-"additive"}  # default = additive (fix: cộng dồn context-delta vào token gốc thay vì ghi đè hoàn toàn)
 for SEED in "${SEEDS[@]}"
 do
@@ -20,10 +20,7 @@ do
     
     rm -rf "$OUT_DIR"
 
-    python -m torch.distributed.run \
-      --nproc_per_node=1 \
-      --master_port=4400 \
-      examples/run_funsd_cord.py \
+    python examples/run_funsd_cord.py \
       --dataset_name cord \
       --do_train --do_eval --do_predict \
       --use_segment_head \
@@ -39,14 +36,10 @@ do
       --seed "$SEED" \
       --overwrite_output_dir --overwrite_cache \
       --use_hierarchical_position_encoding \
-      --use_hierarchical_position_encoding \
       --max_line_position 80 \
       --max_block_position 15 \
       --use_column_encoding True \
-      --max_column_position 8 \
-      --use_intra_line_boundary True \
-      --lambda_bound_init 0.1 \
-     
+      --max_column_position 8
 
 done
 

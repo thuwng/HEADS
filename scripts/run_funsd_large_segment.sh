@@ -1,8 +1,8 @@
 #!/bin/bash
 set -e
 
-cd /home/s24gbn1/Documents/httn/unilm/layoutlmv3
-export PYTHONPATH="/home/s24gbn1/Documents/httn/unilm/layoutlmv3:$PYTHONPATH"
+cd /home/tahuuloc/Documents/tthu/HEADS
+export PYTHONPATH="/home/tahuuloc/Documents/tthu/HEADS:$PYTHONPATH"
 export TOKENIZERS_PARALLELISM=false
 export WANDB_DISABLED=true 
 
@@ -29,10 +29,7 @@ do
     echo "RUNNING FUNSD LARGE (SEGMENT HEAD) - SEED = ${SEED}"
     echo "============================================================"
 
-    "${PYTHON_BIN}" -m torch.distributed.run \
-      --nproc_per_node=1 \
-      --master_port=4398 \
-      examples/run_funsd_cord.py \
+    python examples/run_funsd_cord.py \
       --dataset_name funsd \
       --do_train --do_eval \
       --use_segment_head \
