@@ -648,12 +648,6 @@ def main():
             "This runner supports FUNSD and CORD."
         )
 
-    if data_args.bbox_level == "segment":
-        data_args.apply_xy_cut = False     # box segment + XY-Cut là vô nghĩa
-    if "validation" not in datasets:       # FUNSD không có val
-        sp = datasets["train"].train_test_split(test_size=0.1, seed=42, shuffle=True)
-        datasets["train"], datasets["validation"] = sp["train"], sp["test"]
-    
     if training_args.do_train:
         column_names = datasets["train"].column_names
         features = datasets["train"].features
@@ -1103,7 +1097,7 @@ def main():
         
 
     if training_args.do_eval:
-        validation_name = "validation"
+        validation_name = "test"
         if validation_name not in datasets:
             raise ValueError("--do_eval requires a validation dataset")
         eval_dataset = datasets[validation_name]
