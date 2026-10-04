@@ -69,7 +69,7 @@ class CordConfig(datasets.BuilderConfig):
 
 class Cord(datasets.GeneratorBasedBuilder):
     BUILDER_CONFIGS = [
-        CordConfig(name="cord", version=datasets.Version("1.0.0"), description="CORD dataset"),
+        CordConfig(name="cord", version=datasets.Version("1.1.0"), description="CORD dataset"),
     ]
 
     def _info(self):
@@ -88,6 +88,7 @@ class Cord(datasets.GeneratorBasedBuilder):
                     ),
                     "image": datasets.Array3D(shape=(3, 224, 224), dtype="uint8"),
                     "image_path": datasets.Value("string"),
+                    "entity_ids": datasets.Sequence(datasets.Value("int64")),
                 }
             ),
             supervised_keys=None,
@@ -151,6 +152,7 @@ class Cord(datasets.GeneratorBasedBuilder):
         ann_dir = os.path.join(filepath, "json")
         img_dir = os.path.join(filepath, "image")
         for guid, file in enumerate(sorted(os.listdir(ann_dir))):
+            tokens = []
             words = []
             bboxes = []
             bboxes_seg = []

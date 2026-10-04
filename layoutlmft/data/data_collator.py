@@ -127,7 +127,8 @@ class DataCollatorForKeyValueExtraction(DataCollatorMixin):
                 batch['segment_ids'][i] = batch['segment_ids'][i] + [batch['segment_ids'][i][-1] + 1] * (sequence_length - len(batch['segment_ids'][i])) + [
                     batch['segment_ids'][i][-1] + 2] * IMAGE_LEN
 
-        for key, pad_val in (("word_start", 0), ("boundary_labels", -100), ("orig_word_id", -1)):
+        for key, pad_val in (("word_start", 0), ("boundary_labels", -100), ("orig_word_id", -1),
+                             ("token_node_pos", -1), ("word_entity_id", -1)):
             if key in features[0]:
                 rows = batch[key]
                 if padding_side == "right":

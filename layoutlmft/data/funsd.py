@@ -45,7 +45,7 @@ class Funsd(datasets.GeneratorBasedBuilder):
     """Conll2003 dataset."""
 
     BUILDER_CONFIGS = [
-        FunsdConfig(name="funsd", version=datasets.Version("1.0.0"), description="FUNSD dataset"),
+        FunsdConfig(name="funsd", version=datasets.Version("1.1.0"), description="FUNSD dataset"),
     ]
 
     def _info(self):
@@ -64,6 +64,7 @@ class Funsd(datasets.GeneratorBasedBuilder):
                     ),
                     "image": datasets.Array3D(shape=(3, 224, 224), dtype="uint8"),
                     "image_path": datasets.Value("string"),
+                    "entity_ids": datasets.Sequence(datasets.Value("int64")),
                 }
             ),
             supervised_keys=None,
@@ -102,14 +103,14 @@ class Funsd(datasets.GeneratorBasedBuilder):
             bboxes = []
             bboxes_seg = []
             ner_tags = []
-
+            entity_ids = []
             file_path = os.path.join(ann_dir, file)
             with open(file_path, "r", encoding="utf8") as f:
                 data = json.load(f)
             image_path = os.path.join(img_dir, file)
             image_path = image_path.replace("json", "png")
             image, size = load_image(image_path)
-            for item in data["form"]:
+            for item_idx, item in enumerate(data["form"]):
                 cur_line_bboxes = []
                 words, label = item["words"], item["label"]
                 words = [w for w in words if w["text"].strip() != ""]
@@ -130,7 +131,9 @@ class Funsd(datasets.GeneratorBasedBuilder):
                         cur_line_bboxes.append(normalize_bbox(w["box"], size))
                 # by default: --segment_level_layout 1
                 # if do not want to use segment_level_layout, comment the following line
-                bboxes.extend(cur_line_bboxes)                                   # word-level
-                bboxes_seg.extend(self.get_line_bbox(cur_line_bboxes))           # segment-level (oracle)
+                bboxes.extend(cur_line_bboxes)
+                bboxes_seg.extend(self.get_line_bbox(cur_line_bboxes))
+                entity_ids.extend([int(item.get("id", item_idx))] * len(cur_line_bboxes))   # MỚI
             yield guid, {"id": str(guid), "tokens": tokens, "bboxes": bboxes, "ner_tags": ner_tags,
-                         "image": image, "image_path": image_path, "bboxes_seg": bboxes_seg}
+                         "image": image, "image_path": image_path, "bboxes_seg": bboxes_seg,
+                         "entity_ids": entity_ids}

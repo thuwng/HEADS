@@ -10,6 +10,13 @@ from typing import Optional
 import numpy as np
 from datasets import ClassLabel, load_dataset, load_metric
 from layoutlmft.data.order_utils import retag_bio_after_reorder, entity_set_prf
+
+import random
+from layoutlmft.data.segboot_utils import (
+    segboot_token_columns, perturb_order, make_dev_split, SegBootEpsCallback,
+    type_prior_from_features, unpack_predictions, entity_set_prf_groups,
+)
+
 import transformers
 import torch
 
@@ -86,6 +93,16 @@ class ModelArguments:
     lds_use_gate: bool = field(default=True)
     lds_use_start_cue: bool = field(default=True)
 
+    segboot_knn: int = field(default=24)
+    segboot_tau: float = field(default=0.5)
+    segboot_lambda_group: float = field(default=1.0)
+    segboot_logit_adj: float = field(default=1.0)
+    segboot_final_groups: str = field(default="pass2", metadata={"help": "pass1 | pass2"})
+    segboot_eps_start: float = field(default=1.0)
+    segboot_eps_end: float = field(default=0.0)
+    segboot_eps_decay: float = field(default=0.6)
+    segboot_eval_oracle: bool = field(default=False, metadata={"help": "CHỈ để phân tích upper bound"})
+
 @dataclass
 class DataTrainingArguments:
     task_name: Optional[str] = field(default="ner")
@@ -139,6 +156,13 @@ class DataTrainingArguments:
     second_interpolation: str = field(default="lanczos")
     imagenet_default_mean_and_std: bool = field(default=False)
 
+    use_segboot: bool = field(default=False)
+    eval_on: str = field(default="test", metadata={"help": "test (giống LayoutLMv3, chỉ dùng khi chạy final) | dev"})
+    dev_ratio: float = field(default=0.2)
+    dev_seed: int = field(default=42)
+    dev_fold: int = field(default=-1)
+    num_folds: int = field(default=5)
+    order_aug_prob: float = field(default=0.0)
 
 # ==============================================================================
 # GEOMETRIC PRIMITIVES
@@ -668,6 +692,10 @@ def main():
             f"Unsupported dataset_name={data_args.dataset_name}. "
             "This runner supports FUNSD and CORD."
         )
+    
+    if data_args.eval_on == "dev" and "validation" not in datasets:
+        datasets = make_dev_split(datasets, data_args.dev_ratio, data_args.dev_seed,
+                                  data_args.dev_fold, data_args.num_folds)
 
     if training_args.do_train:
         column_names = datasets["train"].column_names
@@ -743,7 +771,11 @@ def main():
         ),
         lambda_geo_init=model_args.lambda_geo_init,
         lambda_orth_init=model_args.lambda_orth_init,
+
     )
+
+    config.id2label = {i: l for i, l in enumerate(label_list)}
+    config.label2id = {l: i for i, l in enumerate(label_list)}
 
     tokenizer = AutoTokenizer.from_pretrained(
         model_args.tokenizer_name
@@ -758,8 +790,21 @@ def main():
             True if model_args.use_auth_token else None
         ),
     )
-
-    if data_args.use_latent_segment:
+    if data_args.use_segboot:
+        from layoutlmft.models.layoutlmv3.modeling_layoutlmv3_segboot import LayoutLMv3ForSegBootKIE
+        config.segboot_knn = model_args.segboot_knn
+        config.segboot_tau = model_args.segboot_tau
+        config.segboot_lambda_group = model_args.segboot_lambda_group
+        config.segboot_logit_adj = model_args.segboot_logit_adj
+        config.segboot_final_groups = model_args.segboot_final_groups
+        model = LayoutLMv3ForSegBootKIE.from_pretrained(
+            model_args.model_name_or_path, config=config, cache_dir=model_args.cache_dir,
+            revision=model_args.model_revision,
+            use_auth_token=True if model_args.use_auth_token else None,
+        )
+        model.reset_new_parameters()
+        model.segboot.eval_oracle = model_args.segboot_eval_oracle
+    elif data_args.use_latent_segment:
         from layoutlmft.models.layoutlmv3.modeling_layoutlmv3_latent_segment import (
             LayoutLMv3ForLatentSegmentKIE,
         )
@@ -863,12 +908,13 @@ def main():
     # --------------------------------------------------------------------------
     # Tokenization + geometry-only reading order + auto segmentation
     # --------------------------------------------------------------------------
-    def tokenize_and_align_labels(examples, indices, augmentation=False):
+    def tokenize_and_align_labels(examples, indices, augmentation=False, is_train=False):
         # Build the geometry-only reading order BEFORE tokenization.
         reordered_words = []
         reordered_bboxes = []
         reordered_labels = []
         reordered_orders = []
+        reordered_eids = []
 
         for sample_idx in range(
             len(examples[text_column_name])
@@ -887,6 +933,11 @@ def main():
                 )
             else:
                 order = list(range(len(bboxes_i)))
+            if is_train and data_args.order_aug_prob > 0:
+                rng = random.Random(training_args.seed * 100003 + int(indices[sample_idx]))
+                order = perturb_order(order, rng, prob=data_args.order_aug_prob)
+            eids_i = examples["entity_ids"][sample_idx] if "entity_ids" in examples else list(range(len(bboxes_i)))
+            reordered_eids.append([eids_i[j] for j in order])
 
             reordered_orders.append(order)
 
@@ -919,6 +970,7 @@ def main():
         block_ids_all = []
         column_ids_all = []
         word_start_all, boundary_all, orig_wid_all = [], [], []
+        token_node_pos_all, word_entity_all = [], []
         doc_idx_all = []
 
         for batch_index in range(
@@ -976,6 +1028,8 @@ def main():
                 word_ids, boundary_targets_from_word_labels(word_label_strs),
                 order=reordered_orders[original_batch_index])
             word_start_all.append(ws_c); boundary_all.append(bl_c); orig_wid_all.append(ow_c)
+            tnp_c, weid_c = segboot_token_columns(word_ids, reordered_eids[original_batch_index])
+            token_node_pos_all.append(tnp_c); word_entity_all.append(weid_c)
             doc_idx_all.append(int(indices[original_batch_index]))
 
             previous_word_idx = None
@@ -1094,6 +1148,8 @@ def main():
         tokenized_inputs["boundary_labels"] = boundary_all
         tokenized_inputs["orig_word_id"] = orig_wid_all
         tokenized_inputs["doc_idx"] = doc_idx_all
+        tokenized_inputs["token_node_pos"] = token_node_pos_all
+        tokenized_inputs["word_entity_id"] = word_entity_all
 
         if getattr(
             data_args,
@@ -1121,10 +1177,14 @@ def main():
             num_proc=data_args.preprocessing_num_workers,
             load_from_cache_file=not data_args.overwrite_cache,
         )
+        if data_args.use_segboot:
+            prior = type_prior_from_features(train_dataset["labels"], train_dataset["word_start"], label_list)
+            model.segboot.log_prior.copy_(torch.tensor(prior).clamp(min=1e-6).log())
+            logger.info(f"SegBoot type prior {model.segboot.type_names}: {prior}")
         
 
     if training_args.do_eval:
-        validation_name = "test"
+        validation_name = "validation" if data_args.eval_on == "dev" else "test"
         if validation_name not in datasets:
             raise ValueError("--do_eval requires a validation dataset")
         eval_dataset = datasets[validation_name]
@@ -1165,10 +1225,21 @@ def main():
 
     # Metrics
     metric = load_metric("seqeval")
+    eval_ref = None
+    if training_args.do_eval:
+        raw_eval = datasets[validation_name]
+        if data_args.max_val_samples is not None:
+            raw_eval = raw_eval.select(range(data_args.max_val_samples))
+        eval_ref = {
+            "gold": [[label_list[label_to_id[l]] for l in seq] for seq in raw_eval[label_column_name]],
+            "orig_word_id": eval_dataset["orig_word_id"],
+            "doc_idx": eval_dataset["doc_idx"],
+        }
 
     def compute_metrics(p):
-        predictions, labels = p
-        predictions = np.argmax(predictions, axis=2)
+        raw_predictions, labels = p
+        logits_np, groups_np, types_np = unpack_predictions(raw_predictions)
+        predictions = np.argmax(logits_np, axis=2)
 
         # Remove ignored index (special tokens)
         true_predictions = [
@@ -1180,24 +1251,16 @@ def main():
             for prediction, label in zip(predictions, labels)
         ]
 
-        results = metric.compute(predictions=true_predictions, references=true_labels)
-        if data_args.return_entity_level_metrics:
-            # Unpack nested dictionaries
-            final_results = {}
-            for key, value in results.items():
-                if isinstance(value, dict):
-                    for n, v in value.items():
-                        final_results[f"{key}_{n}"] = v
-                else:
-                    final_results[key] = value
-            return final_results
-        else:
-            return {
-                "precision": results["overall_precision"],
-                "recall": results["overall_recall"],
-                "f1": results["overall_f1"],
-                "accuracy": results["overall_accuracy"],
-            }
+        out = {"precision": results["overall_precision"], "recall": results["overall_recall"],
+               "f1": results["overall_f1"], "accuracy": results["overall_accuracy"]}
+        if eval_ref is not None and predictions.shape[0] == len(eval_ref["doc_idx"]):
+            out["entity_f1"] = entity_set_prf(predictions, label_list, eval_ref["orig_word_id"],
+                                              eval_ref["doc_idx"], eval_ref["gold"])["entity_f1"]
+            if groups_np is not None:
+                out["group_entity_f1"] = entity_set_prf_groups(
+                    groups_np, types_np, model.segboot.type_names,
+                    eval_ref["orig_word_id"], eval_ref["doc_idx"], eval_ref["gold"])["group_entity_f1"]
+        return out
     class CustomTrainer(Trainer):
         def create_optimizer(self):
             if self.optimizer is None:
@@ -1235,6 +1298,11 @@ def main():
                     eps=self.args.adam_epsilon)
             return self.optimizer
 
+    callbacks = []
+    if data_args.use_segboot:
+        callbacks.append(SegBootEpsCallback(model_args.segboot_eps_start, model_args.segboot_eps_end,
+                                            model_args.segboot_eps_decay))
+
     # Khởi tạo Trainer bằng CustomTrainer vừa tạo thay vì Trainer mặc định
     trainer = CustomTrainer(
         model=model,
@@ -1244,6 +1312,7 @@ def main():
         tokenizer=tokenizer,
         data_collator=data_collator,
         compute_metrics=compute_metrics,
+        callbacks=callbacks,
     )
 
     # Training
@@ -1278,8 +1347,9 @@ def main():
     if training_args.do_predict:
         logger.info("*** Predict ***")
 
-        predictions, labels, metrics = trainer.predict(test_dataset)
-        predictions = np.argmax(predictions, axis=2)
+        raw_predictions, labels, metrics = trainer.predict(test_dataset)
+        logits_np, groups_np, types_np = unpack_predictions(raw_predictions)
+        predictions = np.argmax(logits_np, axis=2)
 
         raw_test = datasets["test"]
         if data_args.max_test_samples is not None:
@@ -1287,6 +1357,9 @@ def main():
         gold = [[label_list[label_to_id[l]] for l in seq] for seq in raw_test[label_column_name]]
         ent = entity_set_prf(predictions, label_list, test_dataset["orig_word_id"],
                              test_dataset["doc_idx"], gold)
+        if groups_np is not None:
+            ent.update(entity_set_prf_groups(groups_np, types_np, model.segboot.type_names,
+                                             test_dataset["orig_word_id"], test_dataset["doc_idx"], gold))
         trainer.log_metrics("test_entity", ent)
         trainer.save_metrics("test_entity", ent)
 
@@ -1315,10 +1388,13 @@ def main():
                 writer.write(f"{'Doc_Idx':<10} | {'Token':<25} | {'Gold (True)':<15} | {'Predicted':<15}\n")
                 writer.write("-" * 75 + "\n")
                 
-                for doc_idx, (t_tokens, t_preds, t_labels) in enumerate(zip(true_tokens, true_predictions, true_labels)):
+                for f, (t_tokens, t_preds, t_labels) in enumerate(zip(true_tokens, true_predictions, true_labels)):
+                    # Lấy chỉ số tài liệu thật từ dataset
+                    real_doc_idx = test_dataset["doc_idx"][f]
+                    
                     for token, pred, true_lb in zip(t_tokens, t_preds, t_labels):
                         if pred != true_lb:  # Chỉ lọc các token dự đoán sai
-                            writer.write(f"{doc_idx:<10} | {token:<25} | {true_lb:<15} | {pred:<15}\n")
+                            writer.write(f"{real_doc_idx:<10} | {token:<25} | {true_lb:<15} | {pred:<15}\n")
                             error_count += 1
                             
                 writer.write("-" * 75 + "\n")
