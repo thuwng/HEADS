@@ -1257,6 +1257,9 @@ def main():
             for prediction, label in zip(predictions, labels)
         ]
 
+        # THÊM DÒNG NÀY: Tính toán results bằng metric "seqeval"
+        results = metric.compute(predictions=true_predictions, references=true_labels)
+
         out = {"precision": results["overall_precision"], "recall": results["overall_recall"],
                "f1": results["overall_f1"], "accuracy": results["overall_accuracy"]}
         if eval_ref is not None and predictions.shape[0] == len(eval_ref["doc_idx"]):
@@ -1267,6 +1270,7 @@ def main():
                     groups_np, types_np, model.segboot.type_names,
                     eval_ref["orig_word_id"], eval_ref["doc_idx"], eval_ref["gold"])["group_entity_f1"]
         return out
+    
     class CustomTrainer(Trainer):
         def create_optimizer(self):
             if self.optimizer is None:
