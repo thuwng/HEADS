@@ -936,7 +936,12 @@ def main():
             if is_train and data_args.order_aug_prob > 0:
                 rng = random.Random(training_args.seed * 100003 + int(indices[sample_idx]))
                 order = perturb_order(order, rng, prob=data_args.order_aug_prob)
-            eids_i = examples["entity_ids"][sample_idx] if "entity_ids" in examples else list(range(len(bboxes_i)))
+            if "entity_ids" in examples:
+                eids_i = examples["entity_ids"][sample_idx]
+            elif data_args.use_segboot:
+                raise ValueError("SegBoot cần cột entity_ids: kiểm tra funsd.py/cord.py và xoá cache datasets cũ.")
+            else:
+                eids_i = list(range(len(bboxes_i)))
             reordered_eids.append([eids_i[j] for j in order])
 
             reordered_orders.append(order)
@@ -1173,6 +1178,7 @@ def main():
             tokenize_and_align_labels,
             batched=True,
             with_indices=True,
+            fn_kwargs={"is_train": True},          # THÊM DÒNG NÀY
             remove_columns=remove_columns,
             num_proc=data_args.preprocessing_num_workers,
             load_from_cache_file=not data_args.overwrite_cache,
