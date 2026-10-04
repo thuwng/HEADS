@@ -114,6 +114,15 @@ class DataTrainingArguments:
     visual_embed: bool = field(default=True)
     use_segment_head: bool = field(default=False)
 
+    hipos_impl: str = field(
+        default="legacy",
+        metadata={"help": "legacy = line_ids theo y_center (bản 0,95) | visual = build_visual_lines"},
+    )
+    legacy_optimizer: bool = field(
+        default=False,
+        metadata={"help": "Tái hiện optimizer của bản 0,95: lr 5e-4 cho head, AdamW wd mặc định 0.01"},
+    )
+
     # Automatic geometry-only reading-order / segmentation.
     # There is intentionally NO oracle-segment path in this file.
     apply_xy_cut: bool = field(
@@ -550,6 +559,18 @@ def compute_column_ids(bboxes, x_threshold=50):
 
     return columns
 
+def compute_line_ids_legacy(bboxes, y_threshold=10):
+    """Đúng logic line_ids của bản 0,95 (định nghĩa thứ hai trong main cũ)."""
+    if not bboxes:
+        return []
+    yc = [(b[1] + b[3]) / 2 for b in bboxes]
+    out, cur = [0], 0
+    for i in range(1, len(yc)):
+        if abs(yc[i] - yc[i - 1]) > y_threshold:
+            cur += 1
+        out.append(cur)
+    return out
+
 
 # ==============================================================================
 # MAIN
@@ -877,6 +898,8 @@ def main():
             )
             labels_str = [label_list[label_to_id[l]] for l in labels_i]
             new_str = retag_bio_after_reorder(labels_str, order)   # chỉ đụng TARGET
+            if order == list(range(len(order))):
+                assert new_str == labels_str, "retag làm đổi nhãn ở thứ tự gốc -> metric không còn giống LayoutLMv3"
             reordered_labels.append([name_to_raw[s] for s in new_str])
 
         tokenized_inputs = tokenizer(
@@ -940,7 +963,11 @@ def main():
                 else:
                     _, word_seg_id = build_reading_order_and_segments(bbox)
 
-            line_ids_orig = compute_line_ids(bbox)
+            line_ids_orig = (
+                compute_line_ids_legacy(bbox)
+                if data_args.hipos_impl == "legacy"
+                else compute_line_ids(bbox)
+            )
             block_ids_orig = compute_block_ids(bbox)
             column_ids_orig = compute_column_ids(bbox)
 
@@ -1174,6 +1201,18 @@ def main():
     class CustomTrainer(Trainer):
         def create_optimizer(self):
             if self.optimizer is None:
+                if data_args.legacy_optimizer:
+                    bb = [p for n, p in self.model.named_parameters()
+                          if "layoutlmv3" in n and p.requires_grad]
+                    new = [p for n, p in self.model.named_parameters()
+                           if "layoutlmv3" not in n and p.requires_grad]
+                    self.optimizer = torch.optim.AdamW(
+                        [{"params": bb, "lr": self.args.learning_rate},
+                         {"params": new, "lr": 5e-4}],
+                        betas=(self.args.adam_beta1, self.args.adam_beta2),
+                        eps=self.args.adam_epsilon,
+                    )  # không truyền weight_decay -> mặc định 0.01, giống bản 0,95
+                    return self.optimizer
                 NEW_KEYS = ("hierarchical_proj", "line_position_embeddings",
                             "block_position_embeddings", "column_position_embeddings")
                 def is_new(n):
