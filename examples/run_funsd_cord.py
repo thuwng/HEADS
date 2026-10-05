@@ -106,6 +106,10 @@ class ModelArguments:
     segboot_eps_decay: float = field(default=0.6)
     segboot_eval_oracle: bool = field(default=False, metadata={"help": "CHỈ để phân tích upper bound"})
 
+    segboot_share_encoder: bool = field(default=False)
+    segboot_lambda_aux: float = field(default=0.0)
+    segboot_focal_gamma: float = field(default=0.0)
+
 @dataclass
 class DataTrainingArguments:
     task_name: Optional[str] = field(default="ner")
@@ -170,6 +174,8 @@ class DataTrainingArguments:
     vis_dir: str = field(default="visualization")
     vis_max_docs: Optional[int] = field(default=None, metadata={"help": "None = vẽ tất cả tài liệu test"})
     vis_pdf: bool = field(default=True)
+
+    use_segboot_v2: bool = field(default=False)
 
 # ==============================================================================
 # GEOMETRIC PRIMITIVES
@@ -797,7 +803,23 @@ def main():
             True if model_args.use_auth_token else None
         ),
     )
-    if data_args.use_segboot:
+    if data_args.use_segboot_v2:
+        from layoutlmft.models.layoutlmv3.modeling_layoutlmv3_segboot_v2 import LayoutLMv3ForSegBootV2
+        config.segboot_knn = model_args.segboot_knn
+        config.segboot_tau = model_args.segboot_tau
+        config.segboot_lambda_group = model_args.segboot_lambda_group
+        config.segboot_share_encoder = model_args.segboot_share_encoder
+        config.segboot_lambda_aux = model_args.segboot_lambda_aux
+        config.segboot_focal_gamma = model_args.segboot_focal_gamma
+        model = LayoutLMv3ForSegBootV2.from_pretrained(
+            model_args.model_name_or_path, config=config, cache_dir=model_args.cache_dir,
+            revision=model_args.model_revision,
+            use_auth_token=True if model_args.use_auth_token else None)
+        model.reset_new_parameters()
+        if training_args.do_train:
+            model.init_grouper_from_backbone()      # grouper nhận trọng số pretrained, KHÔNG random
+        model.segboot.eval_oracle = model_args.segboot_eval_oracle
+    elif data_args.use_segboot:
         from layoutlmft.models.layoutlmv3.modeling_layoutlmv3_segboot import LayoutLMv3ForSegBootKIE
         config.segboot_knn = model_args.segboot_knn
         config.segboot_tau = model_args.segboot_tau
@@ -927,17 +949,20 @@ def main():
             len(examples[text_column_name])
         ):
             words_i = examples[text_column_name][sample_idx]
-            box_key = "bboxes_seg" if data_args.bbox_level == "segment" else "bboxes"
-            bboxes_i = examples[box_key][sample_idx]
+            if data_args.bbox_level == "line":
+                order_boxes = examples["bboxes"][sample_idx]                      # thứ tự đọc tính trên WORD box
+                bboxes_i = line_level_boxes(order_boxes, build_visual_lines)      # input = box của dòng
+            else:
+                box_key = "bboxes_seg" if data_args.bbox_level == "segment" else "bboxes"
+                bboxes_i = examples[box_key][sample_idx]
+                order_boxes = bboxes_i
             labels_i = examples[label_column_name][sample_idx]
 
             if (
                 getattr(data_args, "apply_xy_cut", True)
                 and len(bboxes_i) > 1
             ):
-                order, _ = build_reading_order_and_segments(
-                    bboxes_i
-                )
+                order, _ = build_reading_order_and_segments(order_boxes)
             else:
                 order = list(range(len(bboxes_i)))
             if is_train and data_args.order_aug_prob > 0:
@@ -945,7 +970,7 @@ def main():
                 order = perturb_order(order, rng, prob=data_args.order_aug_prob)
             if "entity_ids" in examples:
                 eids_i = examples["entity_ids"][sample_idx]
-            elif data_args.use_segboot:
+            elif data_args.use_segboot or data_args.use_segboot_v2:
                 raise ValueError("SegBoot cần cột entity_ids: kiểm tra funsd.py/cord.py và xoá cache datasets cũ.")
             else:
                 eids_i = list(range(len(bboxes_i)))
@@ -1295,8 +1320,13 @@ def main():
                     return self.optimizer
                 NEW_KEYS = ("hierarchical_proj", "line_position_embeddings",
                             "block_position_embeddings", "column_position_embeddings")
+                
+                bb_keys = getattr(self.model, "backbone_lr_keys", ())
                 def is_new(n):
+                    if any(n.startswith(k) for k in bb_keys):
+                        return False          # grouper_encoder + head BIO của v2 học với lr backbone (1e-5)
                     return (not n.startswith("layoutlmv3.")) or any(k in n for k in NEW_KEYS)
+                
                 groups = {}
                 for n, p in self.model.named_parameters():
                     if not p.requires_grad:
