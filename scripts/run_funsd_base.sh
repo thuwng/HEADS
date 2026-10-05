@@ -45,7 +45,7 @@ case "$MODEL" in
   SegBoot) MODEL_FLAGS="--use_segboot --segboot_knn ${KNN:-24} --segboot_tau 0.5 \
                         --segboot_lambda_group ${LG:-1.0} --segboot_logit_adj ${LA:-1.0} \
                         --segboot_eps_start 1.0 --segboot_eps_end ${EPS_END:-0.0} --segboot_eps_decay ${EPS_DECAY:-0.6} \
-                        --segboot_final_groups ${FINAL_GROUPS:-pass2} --order_aug_prob ${ORDER_AUG:-0.0}"
+                        --segboot_final_groups ${FINAL_GROUPS:-pass2} --order_aug_prob ${ORDER_AUG:-0.8}"
            NEW_LR="--new_param_lr ${HEAD_LR:-5e-4}"
            [ "$ORACLE" = "1" ] && MODEL_FLAGS="$MODEL_FLAGS --segboot_eval_oracle True" ;;
   *) echo "MODEL phải là B0, Seg, Latent hoặc SegBoot"; exit 1 ;;
