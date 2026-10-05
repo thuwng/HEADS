@@ -1226,34 +1226,6 @@ def main():
             num_proc=data_args.preprocessing_num_workers,
             load_from_cache_file=not data_args.overwrite_cache,
         )
-        trainer.log_metrics("test_entity", ent)
-        trainer.save_metrics("test_entity", ent)
-        if trainer.is_world_process_zero():
-            # Lưu dự đoán thô -> có thể vẽ lại bằng tools/visualize_from_run.py mà không cần train lại
-            type_names = model.segboot.type_names if groups_np is not None else None
-            extra = {"pred_groups": groups_np, "pred_types": types_np} if groups_np is not None else {}
-            np.savez_compressed(
-                os.path.join(training_args.output_dir, "test_raw_predictions.npz"),
-                pred_ids=predictions.astype(np.int16),
-                orig_word_id=np.array(test_dataset["orig_word_id"], dtype=object),
-                doc_idx=np.array(test_dataset["doc_idx"]),
-                meta=json.dumps({"label_list": list(label_list), "text_column": text_column_name,
-                                 "label_column": label_column_name, "type_names": type_names,
-                                 "max_test_samples": data_args.max_test_samples}),
-                **extra,
-            )
-            if data_args.visualize:
-                raw_vis = raw_test.remove_columns(["image"]) if "image" in raw_test.column_names else raw_test
-                vis = visualize_run(
-                    os.path.join(training_args.output_dir, data_args.vis_dir), raw_vis, label_list,
-                    predictions, test_dataset["orig_word_id"], test_dataset["doc_idx"],
-                    text_column=text_column_name, label_column=label_column_name, label_to_id=label_to_id,
-                    pred_groups=groups_np, pred_types=types_np, type_names=type_names,
-                    max_docs=data_args.vis_max_docs, make_pdf=data_args.vis_pdf, logger=logger,
-                )
-                ref = ent.get("group_entity_f1", ent["entity_f1"])
-                if abs(vis["vis_f1"] - ref) > 1e-6:
-                    logger.warning(f"Visualization F1 {vis['vis_f1']:.6f} khác metric {ref:.6f} – kiểm tra lại!")
 
     # Data collator
     data_collator = DataCollatorForKeyValueExtraction(
@@ -1405,8 +1377,36 @@ def main():
         if groups_np is not None:
             ent.update(entity_set_prf_groups(groups_np, types_np, model.segboot.type_names,
                                              test_dataset["orig_word_id"], test_dataset["doc_idx"], gold))
+        
         trainer.log_metrics("test_entity", ent)
         trainer.save_metrics("test_entity", ent)
+
+        # THÊM ĐOẠN MÃ XUẤT RAW PREDICTION VÀ VISUALIZE VÀO ĐÂY
+        if trainer.is_world_process_zero():
+            type_names = model.segboot.type_names if groups_np is not None else None
+            extra = {"pred_groups": groups_np, "pred_types": types_np} if groups_np is not None else {}
+            np.savez_compressed(
+                os.path.join(training_args.output_dir, "test_raw_predictions.npz"),
+                pred_ids=predictions.astype(np.int16),
+                orig_word_id=np.array(test_dataset["orig_word_id"], dtype=object),
+                doc_idx=np.array(test_dataset["doc_idx"]),
+                meta=json.dumps({"label_list": list(label_list), "text_column": text_column_name,
+                                 "label_column": label_column_name, "type_names": type_names,
+                                 "max_test_samples": data_args.max_test_samples}),
+                **extra,
+            )
+            if data_args.visualize:
+                raw_vis = raw_test.remove_columns(["image"]) if "image" in raw_test.column_names else raw_test
+                vis = visualize_run(
+                    os.path.join(training_args.output_dir, data_args.vis_dir), raw_vis, label_list,
+                    predictions, test_dataset["orig_word_id"], test_dataset["doc_idx"],
+                    text_column=text_column_name, label_column=label_column_name, label_to_id=label_to_id,
+                    pred_groups=groups_np, pred_types=types_np, type_names=type_names,
+                    max_docs=data_args.vis_max_docs, make_pdf=data_args.vis_pdf, logger=logger,
+                )
+                ref = ent.get("group_entity_f1", ent["entity_f1"])
+                if abs(vis["vis_f1"] - ref) > 1e-6:
+                    logger.warning(f"Visualization F1 {vis['vis_f1']:.6f} khác metric {ref:.6f} – kiểm tra lại!")
 
         # Remove ignored index (special tokens)
         true_predictions = [
