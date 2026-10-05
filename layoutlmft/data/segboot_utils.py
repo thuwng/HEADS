@@ -49,6 +49,20 @@ def segboot_token_columns(word_ids: Sequence[Optional[int]], word_eids: Sequence
         prev = w
     return token_node_pos, word_entity_id
 
+def line_level_boxes(bboxes, build_lines_fn):
+    """Box KHÔNG học: mỗi từ nhận union box của dòng thị giác chứa nó (baseline B0-L)."""
+    out = [list(b) for b in bboxes]
+    if len(bboxes) == 0:
+        return out
+    for line in build_lines_fn(bboxes):
+        idx = list(line["indices"])
+        if not idx:
+            continue
+        ub = [min(bboxes[i][0] for i in idx), min(bboxes[i][1] for i in idx),
+              max(bboxes[i][2] for i in idx), max(bboxes[i][3] for i in idx)]
+        for i in idx:
+            out[i] = ub
+    return out
 
 def perturb_order(order: List[int], rng: random.Random, prob: float = 0.5, window: int = 6,
                   frac: float = 0.15) -> List[int]:

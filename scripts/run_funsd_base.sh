@@ -33,7 +33,9 @@ case "$SETTING" in
   A) SETTING_FLAGS="--bbox_level segment --apply_xy_cut False"; SEG_SRC="oracle_bbox" ;;
   B) SETTING_FLAGS="--bbox_level word --apply_xy_cut False";    SEG_SRC="line" ;;
   C) SETTING_FLAGS="--bbox_level word --apply_xy_cut True";     SEG_SRC="line" ;;
-  *) echo "SETTING phải là A, B hoặc C"; exit 1 ;;
+  BL) SETTING_FLAGS="--bbox_level line --apply_xy_cut False";   SEG_SRC="line" ;;
+  CL) SETTING_FLAGS="--bbox_level line --apply_xy_cut True";    SEG_SRC="line" ;;
+  *) echo "SETTING phải là A, B, C, BL hoặc CL"; exit 1 ;;
 esac
 
 # Mặc định: cùng một learning rate cho MỌI tham số, giống LayoutLMv3 chính thức.
@@ -45,10 +47,16 @@ case "$MODEL" in
   SegBoot) MODEL_FLAGS="--use_segboot --segboot_knn ${KNN:-24} --segboot_tau 0.5 \
                         --segboot_lambda_group ${LG:-1.0} --segboot_logit_adj ${LA:-1.0} \
                         --segboot_eps_start 1.0 --segboot_eps_end ${EPS_END:-0.0} --segboot_eps_decay ${EPS_DECAY:-0.6} \
-                        --segboot_final_groups ${FINAL_GROUPS:-pass2} --order_aug_prob ${ORDER_AUG:-0.8}"
+                        --segboot_final_groups ${FINAL_GROUPS:-pass2} --order_aug_prob ${ORDER_AUG:-0.0}"
            NEW_LR="--new_param_lr ${HEAD_LR:-5e-4}"
            [ "$ORACLE" = "1" ] && MODEL_FLAGS="$MODEL_FLAGS --segboot_eval_oracle True" ;;
-  *) echo "MODEL phải là B0, Seg, Latent hoặc SegBoot"; exit 1 ;;
+  SegBootV2) MODEL_FLAGS="--use_segboot_v2 --segboot_knn ${KNN:-24} --segboot_tau ${TAU:-0.7} \
+                          --segboot_lambda_group ${LG:-1.0} --segboot_share_encoder ${SHARE:-False} \
+                          --segboot_eps_start 1.0 --segboot_eps_end ${EPS_END:-0.3} --segboot_eps_decay ${EPS_DECAY:-0.6} \
+                          --order_aug_prob ${ORDER_AUG:-0.0}"
+             NEW_LR="--new_param_lr ${HEAD_LR:-5e-4}"
+             [ "$ORACLE" = "1" ] && MODEL_FLAGS="$MODEL_FLAGS --segboot_eval_oracle True" ;;
+  *) echo "MODEL phải là B0, Seg, Latent, SegBoot hoặc SegBootV2"; exit 1 ;;
 esac
 # Lưu ý: SegBoot ở setting A không có ý nghĩa (box đầu vào đã là oracle) – chỉ chạy như sanity check.
 
@@ -102,13 +110,14 @@ import os, json, numpy as np
 base, proto = os.environ["BASE_OUT_DIR"], os.environ["PROTOCOL"]
 seeds = os.environ["SEEDS_STR"].split()
 if proto == "dev":
-    sources = {"eval_results.json": ["eval_f1", "eval_entity_f1", "eval_group_entity_f1"]}
+    sources = {"eval_results.json": ["eval_f1", "eval_entity_f1", "eval_group_entity_f1", "eval_seg_pair_f1", "eval_seg_exact_rate"]}
 else:
     sources = {
         "test_results.json": ["test_f1", "test_precision", "test_recall"],               # seqeval (giao thức LayoutLMv3)
         "test_entity_results.json": ["entity_f1", "entity_f1_HEADER", "entity_f1_QUESTION", "entity_f1_ANSWER",
                                      "group_entity_f1", "group_entity_f1_HEADER",
-                                     "group_entity_f1_QUESTION", "group_entity_f1_ANSWER"],
+                                     "group_entity_f1_QUESTION", "group_entity_f1_ANSWER",
+                                     "seg_pair_f1", "seg_exact_rate"],
     }
 res = {}
 for s in seeds:

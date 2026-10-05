@@ -14,7 +14,7 @@ from layoutlmft.data.order_utils import retag_bio_after_reorder, entity_set_prf
 import random
 from layoutlmft.data.segboot_utils import (
     segboot_token_columns, perturb_order, make_dev_split, SegBootEpsCallback,
-    type_prior_from_features, unpack_predictions, entity_set_prf_groups,
+    type_prior_from_features, unpack_predictions, entity_set_prf_groups, line_level_boxes,
 )
 
 import json
@@ -815,9 +815,9 @@ def main():
             model_args.model_name_or_path, config=config, cache_dir=model_args.cache_dir,
             revision=model_args.model_revision,
             use_auth_token=True if model_args.use_auth_token else None)
-        model.reset_new_parameters()
         if training_args.do_train:
-            model.init_grouper_from_backbone()      # grouper nhận trọng số pretrained, KHÔNG random
+            model.reset_new_parameters()
+            model.init_grouper_from_backbone()
         model.segboot.eval_oracle = model_args.segboot_eval_oracle
     elif data_args.use_segboot:
         from layoutlmft.models.layoutlmv3.modeling_layoutlmv3_segboot import LayoutLMv3ForSegBootKIE
@@ -1346,7 +1346,7 @@ def main():
             return self.optimizer
 
     callbacks = []
-    if data_args.use_segboot:
+    if data_args.use_segboot or data_args.use_segboot_v2:
         callbacks.append(SegBootEpsCallback(model_args.segboot_eps_start, model_args.segboot_eps_end,
                                             model_args.segboot_eps_decay))
 
@@ -1382,7 +1382,12 @@ def main():
     if training_args.do_eval:
         logger.info("*** Evaluate ***")
 
+        has_seg = hasattr(getattr(model, "segboot", None), "pop_seg_stats")
+        if has_seg:
+            model.segboot.reset_seg_stats()
         metrics = trainer.evaluate()
+        if has_seg:
+            metrics.update(model.segboot.pop_seg_stats("eval_seg_"))
 
         max_val_samples = data_args.max_val_samples if data_args.max_val_samples is not None else len(eval_dataset)
         metrics["eval_samples"] = min(max_val_samples, len(eval_dataset))
@@ -1394,6 +1399,9 @@ def main():
     if training_args.do_predict:
         logger.info("*** Predict ***")
 
+        has_seg = hasattr(getattr(model, "segboot", None), "pop_seg_stats")
+        if has_seg:
+            model.segboot.reset_seg_stats()
         raw_predictions, labels, metrics = trainer.predict(test_dataset)
         logits_np, groups_np, types_np = unpack_predictions(raw_predictions)
         predictions = np.argmax(logits_np, axis=2)
@@ -1408,6 +1416,8 @@ def main():
             ent.update(entity_set_prf_groups(groups_np, types_np, model.segboot.type_names,
                                              test_dataset["orig_word_id"], test_dataset["doc_idx"], gold))
         
+        if has_seg:
+            ent.update(model.segboot.pop_seg_stats("seg_"))
         trainer.log_metrics("test_entity", ent)
         trainer.save_metrics("test_entity", ent)
 
