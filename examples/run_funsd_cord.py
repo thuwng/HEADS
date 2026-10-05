@@ -17,6 +17,9 @@ from layoutlmft.data.segboot_utils import (
     type_prior_from_features, unpack_predictions, entity_set_prf_groups,
 )
 
+import json
+from layoutlmft.data.visualize_predictions import visualize_run
+
 import transformers
 import torch
 
@@ -163,6 +166,10 @@ class DataTrainingArguments:
     dev_fold: int = field(default=-1)
     num_folds: int = field(default=5)
     order_aug_prob: float = field(default=0.0)
+    visualize: bool = field(default=True, metadata={"help": "Vẽ dự đoán trên tập test sau khi predict"})
+    vis_dir: str = field(default="visualization")
+    vis_max_docs: Optional[int] = field(default=None, metadata={"help": "None = vẽ tất cả tài liệu test"})
+    vis_pdf: bool = field(default=True)
 
 # ==============================================================================
 # GEOMETRIC PRIMITIVES
@@ -1219,6 +1226,34 @@ def main():
             num_proc=data_args.preprocessing_num_workers,
             load_from_cache_file=not data_args.overwrite_cache,
         )
+        trainer.log_metrics("test_entity", ent)
+        trainer.save_metrics("test_entity", ent)
+        if trainer.is_world_process_zero():
+            # Lưu dự đoán thô -> có thể vẽ lại bằng tools/visualize_from_run.py mà không cần train lại
+            type_names = model.segboot.type_names if groups_np is not None else None
+            extra = {"pred_groups": groups_np, "pred_types": types_np} if groups_np is not None else {}
+            np.savez_compressed(
+                os.path.join(training_args.output_dir, "test_raw_predictions.npz"),
+                pred_ids=predictions.astype(np.int16),
+                orig_word_id=np.array(test_dataset["orig_word_id"], dtype=object),
+                doc_idx=np.array(test_dataset["doc_idx"]),
+                meta=json.dumps({"label_list": list(label_list), "text_column": text_column_name,
+                                 "label_column": label_column_name, "type_names": type_names,
+                                 "max_test_samples": data_args.max_test_samples}),
+                **extra,
+            )
+            if data_args.visualize:
+                raw_vis = raw_test.remove_columns(["image"]) if "image" in raw_test.column_names else raw_test
+                vis = visualize_run(
+                    os.path.join(training_args.output_dir, data_args.vis_dir), raw_vis, label_list,
+                    predictions, test_dataset["orig_word_id"], test_dataset["doc_idx"],
+                    text_column=text_column_name, label_column=label_column_name, label_to_id=label_to_id,
+                    pred_groups=groups_np, pred_types=types_np, type_names=type_names,
+                    max_docs=data_args.vis_max_docs, make_pdf=data_args.vis_pdf, logger=logger,
+                )
+                ref = ent.get("group_entity_f1", ent["entity_f1"])
+                if abs(vis["vis_f1"] - ref) > 1e-6:
+                    logger.warning(f"Visualization F1 {vis['vis_f1']:.6f} khác metric {ref:.6f} – kiểm tra lại!")
 
     # Data collator
     data_collator = DataCollatorForKeyValueExtraction(
@@ -1378,39 +1413,6 @@ def main():
             [label_list[p] for (p, l) in zip(prediction, label) if l != -100]
             for prediction, label in zip(predictions, labels)
         ]
-
-        # 1. Trích xuất nhãn thực tế (Gold) và chuỗi Tokens gốc
-        true_labels = [
-            [label_list[l] for (p, l) in zip(prediction, label) if l != -100]
-            for prediction, label in zip(predictions, labels)
-        ]
-        
-        true_tokens = [
-            [tokenizer.convert_ids_to_tokens(t) for (t, l) in zip(input_ids, label) if l != -100]
-            for input_ids, label in zip(test_dataset["input_ids"], labels)
-        ]
-
-        # 2. Phân tích và ghi danh sách token bị lỗi ra file
-        output_error_file = os.path.join(training_args.output_dir, "test_errors_analysis.txt")
-        if trainer.is_world_process_zero():
-            error_count = 0
-            with open(output_error_file, "w", encoding="utf-8") as writer:
-                writer.write(f"{'Doc_Idx':<10} | {'Token':<25} | {'Gold (True)':<15} | {'Predicted':<15}\n")
-                writer.write("-" * 75 + "\n")
-                
-                for f, (t_tokens, t_preds, t_labels) in enumerate(zip(true_tokens, true_predictions, true_labels)):
-                    # Lấy chỉ số tài liệu thật từ dataset
-                    real_doc_idx = test_dataset["doc_idx"][f]
-                    
-                    for token, pred, true_lb in zip(t_tokens, t_preds, t_labels):
-                        if pred != true_lb:  # Chỉ lọc các token dự đoán sai
-                            writer.write(f"{real_doc_idx:<10} | {token:<25} | {true_lb:<15} | {pred:<15}\n")
-                            error_count += 1
-                            
-                writer.write("-" * 75 + "\n")
-                writer.write(f"Total token-level errors: {error_count}\n")
-            
-            logger.info(f"*** Đã lưu danh sách token dự đoán lỗi tại: {output_error_file} ***")
 
         trainer.log_metrics("test", metrics)
         trainer.save_metrics("test", metrics)
