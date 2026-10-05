@@ -49,8 +49,11 @@ def segboot_token_columns(word_ids: Sequence[Optional[int]], word_eids: Sequence
         prev = w
     return token_node_pos, word_entity_id
 
+
 def line_level_boxes(bboxes, build_lines_fn):
-    """Box KHÔNG học: mỗi từ nhận union box của dòng thị giác chứa nó (baseline B0-L)."""
+    """Segment box KHÔNG học: mỗi từ nhận union box của dòng thị giác chứa nó
+    (build_visual_lines của run_funsd_cord.py; chỉ dùng hình học, không nhìn nhãn).
+    Dùng cho baseline B0-L (--bbox_level line)."""
     out = [list(b) for b in bboxes]
     if len(bboxes) == 0:
         return out
@@ -63,6 +66,7 @@ def line_level_boxes(bboxes, build_lines_fn):
         for i in idx:
             out[i] = ub
     return out
+
 
 def perturb_order(order: List[int], rng: random.Random, prob: float = 0.5, window: int = 6,
                   frac: float = 0.15) -> List[int]:
