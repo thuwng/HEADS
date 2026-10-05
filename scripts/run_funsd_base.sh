@@ -69,6 +69,11 @@ fi
 
 TAG="${PROTOCOL}-${SETTING}-${MODEL}-hipos${HIPOS}"
 [ "$ORACLE" = "1" ] && TAG="${TAG}-ORACLE"
+
+if [ "$MODEL" = "SegBoot" ]; then
+  TAG="${TAG}-aug${ORDER_AUG:-0.0}"
+fi
+
 TAG="${TAG}${EXTRA_TAG}"
 BASE_OUT_DIR="./logs/funsd-${TAG}"
 
