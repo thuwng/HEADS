@@ -2,13 +2,13 @@
 Reference: https://huggingface.co/datasets/pierresi/cord/blob/main/cord.py
 '''
 
-
 import json
 import os
 from pathlib import Path
 import datasets
 from layoutlmft.data.image_utils import load_image, normalize_bbox
 logger = datasets.logging.get_logger(__name__)
+
 _CITATION = """\
 @article{park2019cord,
   title={CORD: A Consolidated Receipt Dataset for Post-OCR Parsing},
@@ -17,6 +17,7 @@ _CITATION = """\
   year={2019}
 }
 """
+
 _DESCRIPTION = """\
 https://github.com/clovaai/cord/
 """
@@ -51,11 +52,6 @@ def _get_drive_url(url):
 _URLS = [
     _get_drive_url("https://drive.google.com/file/d/1MqhTbcj-AHXOqYoeoh12aRUwIprzTJYI/"),
     _get_drive_url("https://drive.google.com/file/d/1wYdp5nC9LnHQZ2FcmOoC0eClyWvcuARU/")
-    # If you failed to download the dataset through the automatic downloader,
-    # you can download it manually and modify the code to get the local dataset.
-    # Or you can use the following links. Please follow the original LICENSE of CORD for usage.
-    # "https://layoutlm.blob.core.windows.net/cord/CORD-1k-001.zip",
-    # "https://layoutlm.blob.core.windows.net/cord/CORD-1k-002.zip"
 ]
 
 class CordConfig(datasets.BuilderConfig):
@@ -96,34 +92,8 @@ class Cord(datasets.GeneratorBasedBuilder):
             homepage="https://github.com/clovaai/cord/",
         )
 
-    # def _split_generators(self, dl_manager):
-    #     """Returns SplitGenerators."""
-    #     """Uses local files located with data_dir"""
-    #     downloaded_file = dl_manager.download_and_extract(_URLS)
-    #     # move files from the second URL together with files from the first one.
-    #     dest = Path(downloaded_file[0])/"CORD"
-    #     for split in ["train", "dev", "test"]:
-    #         for file_type in ["image", "json"]:
-    #             if split == "test" and file_type == "json":
-    #                 continue
-    #             files = (Path(downloaded_file[1])/"CORD"/split/file_type).iterdir()
-    #             for f in files:
-    #                 os.rename(f, dest/split/file_type/f.name)
-    #     return [
-    #         datasets.SplitGenerator(
-    #             name=datasets.Split.TRAIN, gen_kwargs={"filepath": dest/"train"}
-    #         ),
-    #         datasets.SplitGenerator(
-    #             name=datasets.Split.VALIDATION, gen_kwargs={"filepath": dest/"dev"}
-    #         ),
-    #         datasets.SplitGenerator(
-    #             name=datasets.Split.TEST, gen_kwargs={"filepath": dest/"test"}
-    #         ),
-    #     ]
     def _split_generators(self, dl_manager):
         """Uses local files located in your machine"""
-        # THAY BẰNG ĐƯỜNG DẪN TUYỆT ĐỐI TỚI THƯ MỤC CORD TRÊN MÁY BẠN
-        # Ví dụ: dest = Path("/home/s24gbn1/data/CORD")
         dest = Path("/home/s24gbn1/Documents/phg/unilm/layoutlmv3/CORD")
 
         return [
@@ -131,12 +101,13 @@ class Cord(datasets.GeneratorBasedBuilder):
                 name=datasets.Split.TRAIN, gen_kwargs={"filepath": dest / "train"}
             ),
             datasets.SplitGenerator(
-                name=datasets.Split.VALIDATION, gen_kwargs={"filepath": dest / "dev"}  # Lưu ý: nếu thư mục val của bạn tên là "val", hãy sửa thành dest / "val"
+                name=datasets.Split.VALIDATION, gen_kwargs={"filepath": dest / "dev"}
             ),
             datasets.SplitGenerator(
                 name=datasets.Split.TEST, gen_kwargs={"filepath": dest / "test"}
             ),
         ]
+        
     def get_line_bbox(self, bboxs):
         x = [bboxs[i][j] for i in range(len(bboxs)) for j in range(0, len(bboxs[i]), 2)]
         y = [bboxs[i][j] for i in range(len(bboxs)) for j in range(1, len(bboxs[i]), 2)]
@@ -152,18 +123,21 @@ class Cord(datasets.GeneratorBasedBuilder):
         ann_dir = os.path.join(filepath, "json")
         img_dir = os.path.join(filepath, "image")
         for guid, file in enumerate(sorted(os.listdir(ann_dir))):
-            tokens = []
             words = []
             bboxes = []
             bboxes_seg = []
             ner_tags = []
+            entity_ids = []  # <--- 1. MỚI THÊM: Khởi tạo mảng chứa ID thực thể
+            
             file_path = os.path.join(ann_dir, file)
             with open(file_path, "r", encoding="utf8") as f:
                 data = json.load(f)
             image_path = os.path.join(img_dir, file)
             image_path = image_path.replace("json", "png")
             image, size = load_image(image_path)
-            for item in data["valid_line"]:
+            
+            # <--- 2. MỚI THÊM: Đổi thành enumerate để lấy item_idx
+            for item_idx, item in enumerate(data["valid_line"]): 
                 cur_line_bboxes = []
                 line_words, label = item["words"], item["category"]
                 line_words = [w for w in line_words if w["text"].strip() != ""]
@@ -182,10 +156,14 @@ class Cord(datasets.GeneratorBasedBuilder):
                         words.append(w["text"])
                         ner_tags.append("I-" + label.upper())
                         cur_line_bboxes.append(normalize_bbox(quad_to_box(w["quad"]), size))
-                # by default: --segment_level_layout 1
-                # if do not want to use segment_level_layout, comment the following line
-                bboxes.extend(cur_line_bboxes)                                   # word-level
-                bboxes_seg.extend(self.get_line_bbox(cur_line_bboxes))           # segment-level (oracle)
-            # yield guid, {"id": str(guid), "words": words, "bboxes": bboxes, "ner_tags": ner_tags, "image": image}
+                
+                bboxes.extend(cur_line_bboxes)                                   
+                bboxes_seg.extend(self.get_line_bbox(cur_line_bboxes))           
+                
+                # <--- 3. MỚI THÊM: Gán ID (ưu tiên group_id nếu CORD có, không thì lấy index của line)
+                entity_ids.extend([int(item.get("group_id", item_idx))] * len(cur_line_bboxes)) 
+
+            # <--- 4. MỚI THÊM: Trả về trường entity_ids
             yield guid, {"id": str(guid), "words": words, "bboxes": bboxes, "ner_tags": ner_tags,
-                         "image": image, "image_path": image_path, "bboxes_seg": bboxes_seg}
+                         "image": image, "image_path": image_path, "bboxes_seg": bboxes_seg,
+                         "entity_ids": entity_ids}
