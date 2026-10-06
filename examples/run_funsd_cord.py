@@ -14,7 +14,7 @@ from layoutlmft.data.order_utils import retag_bio_after_reorder, entity_set_prf
 import random
 from layoutlmft.data.segboot_utils import (
     segboot_token_columns, perturb_order, make_dev_split, SegBootEpsCallback,
-    type_prior_from_features, unpack_predictions, entity_set_prf_groups, line_level_boxes,
+    unpack_predictions, line_level_boxes,
 )
 
 import json
@@ -99,17 +99,14 @@ class ModelArguments:
     segboot_knn: int = field(default=24)
     segboot_tau: float = field(default=0.5)
     segboot_lambda_group: float = field(default=1.0)
-    segboot_logit_adj: float = field(default=1.0)
-    segboot_final_groups: str = field(default="pass2", metadata={"help": "pass1 | pass2"})
+
     segboot_eps_start: float = field(default=1.0)
     segboot_eps_end: float = field(default=0.0)
     segboot_eps_decay: float = field(default=0.6)
     segboot_eval_oracle: bool = field(default=False, metadata={"help": "CHỈ để phân tích upper bound"})
 
-    segboot_share_encoder: bool = field(default=False)
-    segboot_lambda_aux: float = field(default=0.0)
-    segboot_focal_gamma: float = field(default=0.0)
-
+    segboot_lambda_aux: float = field(default=0.5)
+    
 @dataclass
 class DataTrainingArguments:
     task_name: Optional[str] = field(default="ner")
@@ -163,7 +160,6 @@ class DataTrainingArguments:
     second_interpolation: str = field(default="lanczos")
     imagenet_default_mean_and_std: bool = field(default=False)
 
-    use_segboot: bool = field(default=False)
     eval_on: str = field(default="test", metadata={"help": "test (giống LayoutLMv3, chỉ dùng khi chạy final) | dev"})
     dev_ratio: float = field(default=0.2)
     dev_seed: int = field(default=42)
@@ -808,30 +804,13 @@ def main():
         config.segboot_knn = model_args.segboot_knn
         config.segboot_tau = model_args.segboot_tau
         config.segboot_lambda_group = model_args.segboot_lambda_group
-        config.segboot_share_encoder = model_args.segboot_share_encoder
         config.segboot_lambda_aux = model_args.segboot_lambda_aux
-        config.segboot_focal_gamma = model_args.segboot_focal_gamma
         model = LayoutLMv3ForSegBootV2.from_pretrained(
             model_args.model_name_or_path, config=config, cache_dir=model_args.cache_dir,
             revision=model_args.model_revision,
             use_auth_token=True if model_args.use_auth_token else None)
         if training_args.do_train:
             model.reset_new_parameters()
-            model.init_grouper_from_backbone()
-        model.segboot.eval_oracle = model_args.segboot_eval_oracle
-    elif data_args.use_segboot:
-        from layoutlmft.models.layoutlmv3.modeling_layoutlmv3_segboot import LayoutLMv3ForSegBootKIE
-        config.segboot_knn = model_args.segboot_knn
-        config.segboot_tau = model_args.segboot_tau
-        config.segboot_lambda_group = model_args.segboot_lambda_group
-        config.segboot_logit_adj = model_args.segboot_logit_adj
-        config.segboot_final_groups = model_args.segboot_final_groups
-        model = LayoutLMv3ForSegBootKIE.from_pretrained(
-            model_args.model_name_or_path, config=config, cache_dir=model_args.cache_dir,
-            revision=model_args.model_revision,
-            use_auth_token=True if model_args.use_auth_token else None,
-        )
-        model.reset_new_parameters()
         model.segboot.eval_oracle = model_args.segboot_eval_oracle
     elif data_args.use_latent_segment:
         from layoutlmft.models.layoutlmv3.modeling_layoutlmv3_latent_segment import (
@@ -970,7 +949,7 @@ def main():
                 order = perturb_order(order, rng, prob=data_args.order_aug_prob)
             if "entity_ids" in examples:
                 eids_i = examples["entity_ids"][sample_idx]
-            elif data_args.use_segboot or data_args.use_segboot_v2:
+            elif data_args.use_segboot_v2:
                 raise ValueError("SegBoot cần cột entity_ids: kiểm tra funsd.py/cord.py và xoá cache datasets cũ.")
             else:
                 eids_i = list(range(len(bboxes_i)))
@@ -1215,10 +1194,7 @@ def main():
             num_proc=data_args.preprocessing_num_workers,
             load_from_cache_file=not data_args.overwrite_cache,
         )
-        if data_args.use_segboot:
-            prior = type_prior_from_features(train_dataset["labels"], train_dataset["word_start"], label_list)
-            model.segboot.log_prior.copy_(torch.tensor(prior).clamp(min=1e-6).log())
-            logger.info(f"SegBoot type prior {model.segboot.type_names}: {prior}")
+
         
 
     if training_args.do_eval:
@@ -1297,10 +1273,6 @@ def main():
         if eval_ref is not None and predictions.shape[0] == len(eval_ref["doc_idx"]):
             out["entity_f1"] = entity_set_prf(predictions, label_list, eval_ref["orig_word_id"],
                                               eval_ref["doc_idx"], eval_ref["gold"])["entity_f1"]
-            if groups_np is not None:
-                out["group_entity_f1"] = entity_set_prf_groups(
-                    groups_np, types_np, model.segboot.type_names,
-                    eval_ref["orig_word_id"], eval_ref["doc_idx"], eval_ref["gold"])["group_entity_f1"]
         return out
     
     class CustomTrainer(Trainer):
@@ -1346,7 +1318,7 @@ def main():
             return self.optimizer
 
     callbacks = []
-    if data_args.use_segboot or data_args.use_segboot_v2:
+    if data_args.use_segboot_v2:
         callbacks.append(SegBootEpsCallback(model_args.segboot_eps_start, model_args.segboot_eps_end,
                                             model_args.segboot_eps_decay))
 
@@ -1412,9 +1384,7 @@ def main():
         gold = [[label_list[label_to_id[l]] for l in seq] for seq in raw_test[label_column_name]]
         ent = entity_set_prf(predictions, label_list, test_dataset["orig_word_id"],
                              test_dataset["doc_idx"], gold)
-        if groups_np is not None:
-            ent.update(entity_set_prf_groups(groups_np, types_np, model.segboot.type_names,
-                                             test_dataset["orig_word_id"], test_dataset["doc_idx"], gold))
+
         
         if has_seg:
             ent.update(model.segboot.pop_seg_stats("seg_"))

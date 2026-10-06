@@ -10,8 +10,6 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from layoutlmft.data.order_utils import gold_entities
-
 try:
     from transformers import TrainerCallback
 except Exception:  # pragma: no cover
@@ -132,19 +130,6 @@ class SegBootEpsCallback(TrainerCallback):
     def on_step_begin(self, args, state, control, model=None, **kw):
         self._set(model, state.global_step, state.max_steps)
 
-
-def type_prior_from_features(labels_rows, word_start_rows, label_list: Sequence[str]) -> List[float]:
-    """Tần suất loại (O + các entity type theo thứ tự sorted) ở mức TỪ trên tập train."""
-    types = ["O"] + sorted({l[2:] for l in label_list if l != "O"})
-    cnt = np.ones(len(types))  # +1 smoothing
-    for labs, ws in zip(labels_rows, word_start_rows):
-        for l, s in zip(labs, ws):
-            if s == 1 and l != -100:
-                name = label_list[l]
-                cnt[0 if name == "O" else types.index(name[2:])] += 1
-    return (cnt / cnt.sum()).tolist()
-
-
 # =============================================================================
 # 3. Dự đoán & metric
 # =============================================================================
@@ -157,52 +142,3 @@ def unpack_predictions(predictions):
         types = predictions[2] if len(predictions) > 2 else None
         return logits, groups, types
     return predictions, None, None
-
-
-def entity_set_prf_groups(pred_groups, pred_types, type_names: Sequence[str],
-                          orig_word_id, doc_idx, gold_word_labels) -> Dict[str, float]:
-    """
-    Entity-level P/R/F1 trên TẬP từ gốc (exact match type + tập từ), không qua BIO.
-    Thực thể bị cắt bởi cửa sổ 512 token được tính như hai thực thể (giống seqeval của LayoutLMv3).
-    """
-    pred_groups = np.asarray(pred_groups)
-    pred_types = np.asarray(pred_types)
-    per_doc_pred = defaultdict(set)
-    for f, (wids, d) in enumerate(zip(orig_word_id, doc_idx)):
-        groups = defaultdict(set)
-        gtype = {}
-        for t, w in enumerate(wids):
-            if w < 0 or t >= pred_groups.shape[1]:
-                continue
-            g, ty = int(pred_groups[f, t]), int(pred_types[f, t])
-            if g < 0 or ty <= 0:          # type 0 = O
-                continue
-            groups[g].add(int(w))
-            gtype[g] = type_names[ty]
-        for g, ws in groups.items():
-            per_doc_pred[int(d)].add((gtype[g], frozenset(ws)))
-
-    tp = n_pred = n_gold = 0
-    per_type = defaultdict(lambda: [0, 0, 0])
-    for d, labels in enumerate(gold_word_labels):
-        gold = gold_entities(labels)
-        pred = per_doc_pred.get(d, set())
-        hit = gold & pred
-        tp += len(hit); n_pred += len(pred); n_gold += len(gold)
-        for t, _ in hit:
-            per_type[t][0] += 1
-        for t, _ in pred:
-            per_type[t][1] += 1
-        for t, _ in gold:
-            per_type[t][2] += 1
-
-    def prf(a, p, g):
-        pr = a / p if p else 0.0
-        rc = a / g if g else 0.0
-        return pr, rc, (2 * pr * rc / (pr + rc) if pr + rc else 0.0)
-
-    P, R, F = prf(tp, n_pred, n_gold)
-    out = {"group_entity_precision": P, "group_entity_recall": R, "group_entity_f1": F}
-    for t, (a, p, g) in sorted(per_type.items()):
-        out[f"group_entity_f1_{t}"] = prf(a, p, g)[2]
-    return out
